@@ -1,0 +1,1310 @@
+//+------------------------------------------------------------------+
+//|                   Enhanced Multi-Asset Manual Trading EA          |
+//|                  EA محسّن للتداول اليدوي متعدد الأصول           |
+//+------------------------------------------------------------------+
+#property copyright "Professional Trading Solutions v2.0"
+#property version   "2.0"
+#property strict
+#property description "EA محسّن للتداول على M1 و M5 مع تحكم يدوي كامل"
+#property description "يدعم الفوركس والذهب والعملات الرقمية مع حماية متقدمة"
+
+#include <Trade\Trade.mqh>
+#include <Trade\SymbolInfo.mqh>
+#include <Trade\PositionInfo.mqh>
+#include <Trade\AccountInfo.mqh>
+#include <Trade\DealInfo.mqh>
+
+//+------------------------------------------------------------------+
+//| إعدادات الإدخال                                                  |
+//+------------------------------------------------------------------+
+// إعدادات التداول الأساسية
+input group "════════════ إعدادات التداول الأساسية ════════════"
+input double   InpLotSize = 0.01;               // حجم اللوت لكل صفقة
+input bool     InpUseAutoLot = false;           // استخدام حساب اللوت التلقائي
+input double   InpAutoLotRisk = 1.0;            // نسبة المخاطرة % (للحساب التلقائي)
+input int      InpMaxPositions = 3;             // الحد الأقصى لعدد الصفقات المفتوحة
+input int      InpMaxPositionsPerSymbol = 1;    // الحد الأقصى للصفقات لكل رمز
+input int      InpMaxDailyTrades = 10;          // الحد الأقصى للصفقات اليومية
+input int      InpMagicNumber = 123456;         // الرقم السحري
+input string   InpComment = "Manual EA v2";     // تعليق الصفقات
+
+// إعدادات الرموز المسموح بتداولها
+input group "════════════ إعدادات الرموز ════════════"
+input string   InpAllowedSymbols = "EURUSD,GBPUSD,XAUUSD,BTCUSD"; // الرموز المسموح بتداولها
+input bool     InpTradeCurrentChartOnly = false; // التداول على الشارت الحالي فقط
+
+// إعدادات وقف الخسارة وجني الأرباح
+input group "════════════ إعدادات SL/TP ════════════"
+input bool     InpUseStopLoss = true;          // استخدام وقف الخسارة
+input int      InpStopLossPips = 20;           // وقف الخسارة بالنقاط
+input bool     InpUseTakeProfit = true;        // استخدام جني الأرباح
+input int      InpTakeProfitPips = 40;         // جني الأرباح بالنقاط
+input bool     InpUseBreakeven = true;         // استخدام نقطة التعادل
+input int      InpBreakevenPips = 15;          // تفعيل التعادل عند (نقاط)
+input int      InpBreakevenProfitPips = 2;     // ربح التعادل (نقاط)
+input bool     InpUseTrailingStop = true;      // استخدام وقف الخسارة المتحرك
+input int      InpTrailingStartPips = 15;      // بداية التحرك بالنقاط
+input int      InpTrailingStepPips = 5;        // خطوة التحرك بالنقاط
+
+// إعدادات الإطار الزمني
+input group "════════════ إعدادات الإطار الزمني ════════════"
+input bool     InpTradeM1 = true;              // التداول على M1
+input bool     InpTradeM5 = true;              // التداول على M5
+input int      InpMinCandlesBetweenTrades = 3; // الحد الأدنى من الشموع بين الصفقات
+
+// إعدادات الاستراتيجية
+input group "════════════ إعدادات الاستراتيجية ════════════"
+input int      InpFastMA = 20;                 // فترة المتوسط السريع
+input int      InpSlowMA = 50;                 // فترة المتوسط البطيء
+input ENUM_MA_METHOD InpMAMethod = MODE_EMA;   // نوع المتوسط المتحرك
+input int      InpRSIPeriod = 14;              // فترة RSI
+input double   InpRSIOverbought = 70;          // مستوى ذروة الشراء
+input double   InpRSIOversold = 30;            // مستوى ذروة البيع
+input bool     InpUseVolumeFilter = true;      // استخدام فلتر الحجم
+input double   InpMinVolumeRatio = 1.5;        // نسبة الحجم الأدنى
+
+// إعدادات إدارة المخاطر
+input group "════════════ إدارة المخاطر ════════════"
+input bool     InpUseRiskManagement = true;    // استخدام إدارة المخاطر
+input double   InpMaxRiskPercent = 2.0;        // الحد الأقصى للمخاطرة % من الرصيد
+input double   InpMaxDailyLossPercent = 6.0;   // الحد الأقصى للخسارة اليومية %
+input double   InpMaxDrawdownPercent = 20.0;   // الحد الأقصى للسحب %
+input bool     InpCloseAllOnMaxLoss = true;    // إغلاق جميع الصفقات عند الخسارة القصوى
+
+// إعدادات الوقت
+input group "════════════ إعدادات الوقت ════════════"
+input bool     InpUseTimeFilter = true;        // استخدام فلتر الوقت
+input int      InpStartHour = 1;               // ساعة بدء التداول
+input int      InpEndHour = 23;                // ساعة إنهاء التداول
+input bool     InpCloseOnFriday = true;        // إغلاق الصفقات يوم الجمعة
+input int      InpFridayCloseHour = 20;        // ساعة الإغلاق يوم الجمعة
+input bool     InpAvoidNews = true;            // تجنب أوقات الأخبار
+input int      InpNewsAvoidMinutes = 30;       // دقائق تجنب الأخبار
+
+// إعدادات خاصة بالأصول
+input group "════════════ إعدادات خاصة بالأصول ════════════"
+// الذهب
+input double   InpGoldMultiplier = 1.5;        // مضاعف حجم SL/TP للذهب
+input double   InpGoldMaxLot = 0.1;            // الحد الأقصى للوت للذهب
+// العملات الرقمية
+input double   InpCryptoMultiplier = 2.0;      // مضاعف حجم SL/TP للكريبتو
+input double   InpCryptoMaxLot = 0.05;         // الحد الأقصى للوت للكريبتو
+input bool     InpCryptoReduceWeekend = true;  // تقليل التداول في عطلة نهاية الأسبوع
+
+//+------------------------------------------------------------------+
+//| هياكل البيانات                                                   |
+//+------------------------------------------------------------------+
+// أنواع الأصول
+enum ENUM_ASSET_TYPE {
+    ASSET_FOREX,      // عملات
+    ASSET_GOLD,       // ذهب
+    ASSET_SILVER,     // فضة
+    ASSET_CRYPTO,     // عملات رقمية
+    ASSET_INDEX,      // مؤشرات
+    ASSET_OTHER       // أخرى
+};
+
+// معلومات الأصل المحسنة
+struct AssetInfo {
+    string symbol;
+    ENUM_ASSET_TYPE type;
+    double pip_size;
+    double pip_value;
+    int digits;
+    double min_lot;
+    double max_lot;
+    double lot_step;
+    double sl_multiplier;
+    double tp_multiplier;
+    string description;
+    bool is_active;
+};
+
+// حالة السوق المحسنة
+struct MarketState {
+    double fast_ma_current;
+    double fast_ma_previous;
+    double slow_ma_current;
+    double slow_ma_previous;
+    double rsi_current;
+    double rsi_previous;
+    double volume_current;
+    double volume_average;
+    bool ma_cross_up;
+    bool ma_cross_down;
+    bool rsi_overbought;
+    bool rsi_oversold;
+    bool volume_confirmed;
+    datetime last_signal_time;
+    int bars_since_signal;
+};
+
+// إحصائيات التداول
+struct TradingStats {
+    int total_trades;
+    int winning_trades;
+    int losing_trades;
+    double total_profit;
+    double total_loss;
+    double max_profit;
+    double max_loss;
+    double consecutive_wins;
+    double consecutive_losses;
+    datetime last_trade_time;
+};
+
+//+------------------------------------------------------------------+
+//| متغيرات عامة                                                     |
+//+------------------------------------------------------------------+
+CTrade trade;
+CSymbolInfo symbol_info;
+CPositionInfo position_info;
+CAccountInfo account_info;
+CDealInfo deal_info;
+
+// معلومات الأصول
+AssetInfo assets[];
+int active_assets_count = 0;
+
+// حالة السوق لكل رمز وإطار زمني
+MarketState market_states_m1[];
+MarketState market_states_m5[];
+
+// إحصائيات
+TradingStats stats;
+double initial_balance;
+double daily_starting_balance;
+double peak_balance;
+int daily_trades_count;
+datetime current_day;
+
+// مؤشرات
+struct IndicatorHandles {
+    int fast_ma_m1;
+    int slow_ma_m1;
+    int rsi_m1;
+    int fast_ma_m5;
+    int slow_ma_m5;
+    int rsi_m5;
+};
+IndicatorHandles indicators[];
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                    |
+//+------------------------------------------------------------------+
+int OnInit() {
+    Print("╔══════════════════════════════════════════════════╗");
+    Print("║   Enhanced Multi-Asset Manual Trading EA v2.0    ║");
+    Print("║          EA محسّن للتداول متعدد الأصول           ║");
+    Print("╚══════════════════════════════════════════════════╝");
+    
+    // تهيئة إعدادات التداول
+    trade.SetExpertMagicNumber(InpMagicNumber);
+    trade.SetDeviationInPoints(10);
+    trade.SetTypeFilling(ORDER_FILLING_IOC);
+    trade.SetAsyncMode(false);
+    
+    // تهيئة الأصول المسموح بتداولها
+    if(!InitializeAssets()) {
+        Print("❌ فشل في تهيئة الأصول");
+        return INIT_FAILED;
+    }
+    
+    // تهيئة المؤشرات لكل أصل
+    if(!InitializeIndicators()) {
+        Print("❌ فشل في تهيئة المؤشرات");
+        return INIT_FAILED;
+    }
+    
+    // تهيئة إدارة المخاطر
+    InitializeRiskManagement();
+    
+    // تهيئة الإحصائيات
+    InitializeStats();
+    
+    // طباعة معلومات البدء
+    PrintStartupInfo();
+    
+    // تعيين Timer للمهام الدورية
+    EventSetTimer(60); // كل دقيقة
+    
+    return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| تهيئة الأصول المسموح بتداولها                                    |
+//+------------------------------------------------------------------+
+bool InitializeAssets() {
+    string symbols[];
+    
+    if(InpTradeCurrentChartOnly) {
+        // التداول على الرمز الحالي فقط
+        ArrayResize(symbols, 1);
+        symbols[0] = _Symbol;
+    } else {
+        // تحليل قائمة الرموز المسموح بها
+        string allowed_list = InpAllowedSymbols;
+        StringReplace(allowed_list, " ", "");
+        int count = StringSplit(allowed_list, ',', symbols);
+        
+        if(count == 0) {
+            Print("❌ لا توجد رموز محددة للتداول");
+            return false;
+        }
+    }
+    
+    // تهيئة معلومات كل أصل
+    ArrayResize(assets, ArraySize(symbols));
+    ArrayResize(market_states_m1, ArraySize(symbols));
+    ArrayResize(market_states_m5, ArraySize(symbols));
+    ArrayResize(indicators, ArraySize(symbols));
+    
+    active_assets_count = 0;
+    
+    for(int i = 0; i < ArraySize(symbols); i++) {
+        string symbol = symbols[i];
+        
+        // التحقق من توفر الرمز
+        if(!SymbolSelect(symbol, true)) {
+            Print("⚠️ تحذير: الرمز ", symbol, " غير متوفر");
+            continue;
+        }
+        
+        // تهيئة معلومات الأصل
+        if(InitializeAsset(i, symbol)) {
+            active_assets_count++;
+        }
+    }
+    
+    if(active_assets_count == 0) {
+        Print("❌ لا توجد أصول نشطة للتداول");
+        return false;
+    }
+    
+    Print("✅ تم تهيئة ", active_assets_count, " أصل للتداول");
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| تهيئة أصل واحد                                                   |
+//+------------------------------------------------------------------+
+bool InitializeAsset(int index, string symbol) {
+    assets[index].symbol = symbol;
+    assets[index].is_active = false;
+    
+    // الحصول على معلومات الرمز
+    CSymbolInfo temp_symbol;
+    if(!temp_symbol.Name(symbol)) {
+        Print("❌ فشل في الحصول على معلومات ", symbol);
+        return false;
+    }
+    
+    // تحديد نوع الأصل
+    assets[index].type = DetectAssetType(symbol, temp_symbol);
+    assets[index].description = GetAssetDescription(assets[index].type);
+    
+    // معلومات أساسية
+    assets[index].digits = (int)temp_symbol.Digits();
+    assets[index].min_lot = temp_symbol.LotsMin();
+    assets[index].max_lot = temp_symbol.LotsMax();
+    assets[index].lot_step = temp_symbol.LotsStep();
+    
+    // حساب حجم النقطة
+    CalculatePipSize(index, temp_symbol);
+    
+    // تطبيق المضاعفات حسب نوع الأصل
+    ApplyAssetMultipliers(index);
+    
+    // طباعة معلومات الأصل
+    PrintAssetInfo(index);
+    
+    assets[index].is_active = true;
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| تحديد نوع الأصل                                                  |
+//+------------------------------------------------------------------+
+ENUM_ASSET_TYPE DetectAssetType(string symbol, CSymbolInfo &sym_info) {
+    string symbol_upper = symbol;
+    StringToUpper(symbol_upper);
+    string base_currency = sym_info.CurrencyBase();
+    string profit_currency = sym_info.CurrencyProfit();
+    
+    // فحص العملات الرقمية
+    string crypto_symbols[] = {"BTC", "ETH", "LTC", "XRP", "BNB", "ADA", "DOGE", 
+                              "DOT", "LINK", "UNI", "MATIC", "SOL", "AVAX"};
+    for(int i = 0; i < ArraySize(crypto_symbols); i++) {
+        if(StringFind(symbol_upper, crypto_symbols[i]) >= 0) {
+            return ASSET_CRYPTO;
+        }
+    }
+    
+    // فحص الذهب
+    if(StringFind(symbol_upper, "XAU") >= 0 || 
+       StringFind(symbol_upper, "GOLD") >= 0) {
+        return ASSET_GOLD;
+    }
+    
+    // فحص الفضة
+    if(StringFind(symbol_upper, "XAG") >= 0 || 
+       StringFind(symbol_upper, "SILVER") >= 0) {
+        return ASSET_SILVER;
+    }
+    
+    // فحص المؤشرات
+    string index_symbols[] = {"US30", "US500", "NAS100", "DAX", "FTSE", "JP225"};
+    for(int i = 0; i < ArraySize(index_symbols); i++) {
+        if(StringFind(symbol_upper, index_symbols[i]) >= 0) {
+            return ASSET_INDEX;
+        }
+    }
+    
+    // فحص أزواج العملات
+    string forex_currencies[] = {"USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD"};
+    bool base_is_forex = false;
+    bool profit_is_forex = false;
+    
+    for(int i = 0; i < ArraySize(forex_currencies); i++) {
+        if(base_currency == forex_currencies[i]) base_is_forex = true;
+        if(profit_currency == forex_currencies[i]) profit_is_forex = true;
+    }
+    
+    if(base_is_forex && profit_is_forex) {
+        return ASSET_FOREX;
+    }
+    
+    return ASSET_OTHER;
+}
+
+//+------------------------------------------------------------------+
+//| حساب حجم النقطة                                                  |
+//+------------------------------------------------------------------+
+void CalculatePipSize(int index, CSymbolInfo &sym_info) {
+    ENUM_ASSET_TYPE type = assets[index].type;
+    int digits = assets[index].digits;
+    
+    switch(type) {
+        case ASSET_CRYPTO:
+            // العملات الرقمية
+            if(StringFind(assets[index].symbol, "BTC") >= 0) {
+                assets[index].pip_size = 1.0; // 1 دولار للبيتكوين
+            } else {
+                assets[index].pip_size = sym_info.TickSize() * 10;
+            }
+            break;
+            
+        case ASSET_GOLD:
+            // الذهب
+            assets[index].pip_size = (digits == 2) ? 0.1 : 0.01;
+            break;
+            
+        case ASSET_SILVER:
+            // الفضة
+            assets[index].pip_size = (digits == 3) ? 0.01 : 0.001;
+            break;
+            
+        case ASSET_INDEX:
+            // المؤشرات
+            assets[index].pip_size = 1.0;
+            break;
+            
+        case ASSET_FOREX:
+            // أزواج العملات
+            if(StringFind(sym_info.CurrencyProfit(), "JPY") >= 0) {
+                assets[index].pip_size = (digits == 3) ? 0.01 : 0.001;
+            } else {
+                assets[index].pip_size = (digits == 5) ? 0.0001 : 0.00001;
+            }
+            break;
+            
+        default:
+            assets[index].pip_size = sym_info.Point() * 10;
+    }
+}
+
+//+------------------------------------------------------------------+
+//| تطبيق المضاعفات حسب نوع الأصل                                   |
+//+------------------------------------------------------------------+
+void ApplyAssetMultipliers(int index) {
+    assets[index].sl_multiplier = 1.0;
+    assets[index].tp_multiplier = 1.0;
+    
+    switch(assets[index].type) {
+        case ASSET_GOLD:
+            assets[index].sl_multiplier = InpGoldMultiplier;
+            assets[index].tp_multiplier = InpGoldMultiplier;
+            assets[index].max_lot = MathMin(assets[index].max_lot, InpGoldMaxLot);
+            break;
+            
+        case ASSET_CRYPTO:
+            assets[index].sl_multiplier = InpCryptoMultiplier;
+            assets[index].tp_multiplier = InpCryptoMultiplier;
+            assets[index].max_lot = MathMin(assets[index].max_lot, InpCryptoMaxLot);
+            break;
+            
+        case ASSET_INDEX:
+            assets[index].sl_multiplier = 1.5;
+            assets[index].tp_multiplier = 1.5;
+            break;
+    }
+}
+
+//+------------------------------------------------------------------+
+//| الحصول على وصف نوع الأصل                                        |
+//+------------------------------------------------------------------+
+string GetAssetDescription(ENUM_ASSET_TYPE type) {
+    switch(type) {
+        case ASSET_FOREX:  return "زوج عملات";
+        case ASSET_GOLD:   return "ذهب";
+        case ASSET_SILVER: return "فضة";
+        case ASSET_CRYPTO: return "عملة رقمية";
+        case ASSET_INDEX:  return "مؤشر";
+        default:           return "أصل آخر";
+    }
+}
+
+//+------------------------------------------------------------------+
+//| طباعة معلومات الأصل                                             |
+//+------------------------------------------------------------------+
+void PrintAssetInfo(int index) {
+    Print("════════════════════════════════════════");
+    Print("الأصل #", index + 1, ": ", assets[index].symbol);
+    Print("النوع: ", assets[index].description);
+    Print("حجم النقطة: ", DoubleToString(assets[index].pip_size, assets[index].digits));
+    Print("الحد الأدنى للوت: ", assets[index].min_lot);
+    Print("الحد الأقصى للوت: ", assets[index].max_lot);
+    Print("مضاعف SL: ", assets[index].sl_multiplier);
+    Print("مضاعف TP: ", assets[index].tp_multiplier);
+}
+
+//+------------------------------------------------------------------+
+//| تهيئة المؤشرات                                                   |
+//+------------------------------------------------------------------+
+bool InitializeIndicators() {
+    for(int i = 0; i < ArraySize(assets); i++) {
+        if(!assets[i].is_active) continue;
+        
+        string symbol = assets[i].symbol;
+        
+        // مؤشرات M1
+        if(InpTradeM1) {
+            indicators[i].fast_ma_m1 = iMA(symbol, PERIOD_M1, InpFastMA, 0, InpMAMethod, PRICE_CLOSE);
+            indicators[i].slow_ma_m1 = iMA(symbol, PERIOD_M1, InpSlowMA, 0, InpMAMethod, PRICE_CLOSE);
+            indicators[i].rsi_m1 = iRSI(symbol, PERIOD_M1, InpRSIPeriod, PRICE_CLOSE);
+            
+            if(indicators[i].fast_ma_m1 == INVALID_HANDLE || 
+               indicators[i].slow_ma_m1 == INVALID_HANDLE ||
+               indicators[i].rsi_m1 == INVALID_HANDLE) {
+                Print("❌ فشل في تهيئة مؤشرات M1 للرمز ", symbol);
+                return false;
+            }
+        }
+        
+        // مؤشرات M5
+        if(InpTradeM5) {
+            indicators[i].fast_ma_m5 = iMA(symbol, PERIOD_M5, InpFastMA, 0, InpMAMethod, PRICE_CLOSE);
+            indicators[i].slow_ma_m5 = iMA(symbol, PERIOD_M5, InpSlowMA, 0, InpMAMethod, PRICE_CLOSE);
+            indicators[i].rsi_m5 = iRSI(symbol, PERIOD_M5, InpRSIPeriod, PRICE_CLOSE);
+            
+            if(indicators[i].fast_ma_m5 == INVALID_HANDLE || 
+               indicators[i].slow_ma_m5 == INVALID_HANDLE ||
+               indicators[i].rsi_m5 == INVALID_HANDLE) {
+                Print("❌ فشل في تهيئة مؤشرات M5 للرمز ", symbol);
+                return false;
+            }
+        }
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| تهيئة إدارة المخاطر                                              |
+//+------------------------------------------------------------------+
+void InitializeRiskManagement() {
+    initial_balance = account_info.Balance();
+    daily_starting_balance = initial_balance;
+    peak_balance = initial_balance;
+    daily_trades_count = 0;
+    current_day = TimeCurrent() - (TimeCurrent() % 86400);
+}
+
+//+------------------------------------------------------------------+
+//| تهيئة الإحصائيات                                                |
+//+------------------------------------------------------------------+
+void InitializeStats() {
+    stats.total_trades = 0;
+    stats.winning_trades = 0;
+    stats.losing_trades = 0;
+    stats.total_profit = 0;
+    stats.total_loss = 0;
+    stats.max_profit = 0;
+    stats.max_loss = 0;
+    stats.consecutive_wins = 0;
+    stats.consecutive_losses = 0;
+    stats.last_trade_time = 0;
+}
+
+//+------------------------------------------------------------------+
+//| طباعة معلومات البدء                                              |
+//+------------------------------------------------------------------+
+void PrintStartupInfo() {
+    Print("\n╔══════════════════════════════════════════════════╗");
+    Print("║              إعدادات EA                           ║");
+    Print("╠══════════════════════════════════════════════════╣");
+    Print("║ حجم اللوت: ", InpUseAutoLot ? "تلقائي" : DoubleToString(InpLotSize, 2));
+    if(InpUseAutoLot) {
+        Print("║ نسبة المخاطرة: ", InpAutoLotRisk, "%");
+    }
+    Print("║ الحد الأقصى للصفقات: ", InpMaxPositions);
+    Print("║ الحد الأقصى لكل رمز: ", InpMaxPositionsPerSymbol);
+    Print("║ الحد الأقصى اليومي: ", InpMaxDailyTrades);
+    Print("║ وقف الخسارة: ", InpStopLossPips, " نقطة");
+    Print("║ جني الأرباح: ", InpTakeProfitPips, " نقطة");
+    Print("║ نقطة التعادل: ", InpUseBreakeven ? "مفعل" : "معطل");
+    Print("║ وقف الخسارة المتحرك: ", InpUseTrailingStop ? "مفعل" : "معطل");
+    Print("║ التداول على M1: ", InpTradeM1 ? "مفعل" : "معطل");
+    Print("║ التداول على M5: ", InpTradeM5 ? "مفعل" : "معطل");
+    Print("║ فلتر الوقت: ", InpUseTimeFilter ? 
+          StringFormat("%d:00 - %d:00", InpStartHour, InpEndHour) : "معطل");
+    Print("╚══════════════════════════════════════════════════╝\n");
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                  |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason) {
+    EventKillTimer();
+    
+    // تحرير المؤشرات
+    ReleaseIndicators();
+    
+    // طباعة ملخص الأداء
+    PrintPerformanceSummary();
+    
+    Print("\n╔══════════════════════════════════════════════════╗");
+    Print("║          إيقاف EA - السبب: ", GetDeInitReasonText(reason));
+    Print("╚══════════════════════════════════════════════════╝");
+}
+
+//+------------------------------------------------------------------+
+//| تحرير المؤشرات                                                   |
+//+------------------------------------------------------------------+
+void ReleaseIndicators() {
+    for(int i = 0; i < ArraySize(indicators); i++) {
+        if(indicators[i].fast_ma_m1 != INVALID_HANDLE) IndicatorRelease(indicators[i].fast_ma_m1);
+        if(indicators[i].slow_ma_m1 != INVALID_HANDLE) IndicatorRelease(indicators[i].slow_ma_m1);
+        if(indicators[i].rsi_m1 != INVALID_HANDLE) IndicatorRelease(indicators[i].rsi_m1);
+        
+        if(indicators[i].fast_ma_m5 != INVALID_HANDLE) IndicatorRelease(indicators[i].fast_ma_m5);
+        if(indicators[i].slow_ma_m5 != INVALID_HANDLE) IndicatorRelease(indicators[i].slow_ma_m5);
+        if(indicators[i].rsi_m5 != INVALID_HANDLE) IndicatorRelease(indicators[i].rsi_m5);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                              |
+//+------------------------------------------------------------------+
+void OnTick() {
+    // فحص إدارة المخاطر
+    if(InpUseRiskManagement && !CheckRiskLimits()) {
+        if(InpCloseAllOnMaxLoss) {
+            CloseAllPositions("تجاوز حدود المخاطر");
+        }
+        return;
+    }
+    
+    // فحص الوقت
+    if(InpUseTimeFilter && !IsTimeToTrade()) {
+        return;
+    }
+    
+    // إدارة الصفقات المفتوحة
+    ManageOpenPositions();
+    
+    // فحص إشارات جديدة لكل أصل نشط
+    for(int i = 0; i < ArraySize(assets); i++) {
+        if(!assets[i].is_active) continue;
+        
+        // فحص M1
+        if(InpTradeM1 && IsNewBar(assets[i].symbol, PERIOD_M1)) {
+            CheckForSignals(i, PERIOD_M1);
+        }
+        
+        // فحص M5
+        if(InpTradeM5 && IsNewBar(assets[i].symbol, PERIOD_M5)) {
+            CheckForSignals(i, PERIOD_M5);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| فحص حدود المخاطر                                                |
+//+------------------------------------------------------------------+
+bool CheckRiskLimits() {
+    if(!InpUseRiskManagement) return true;
+    
+    double current_balance = account_info.Balance();
+    double current_equity = account_info.Equity();
+    
+    // تحديث الذروة
+    if(current_balance > peak_balance) {
+        peak_balance = current_balance;
+    }
+    
+    // حساب السحب
+    double drawdown = ((peak_balance - current_equity) / peak_balance) * 100;
+    
+    // حساب الخسارة اليومية
+    double daily_loss = ((daily_starting_balance - current_balance) / daily_starting_balance) * 100;
+    
+    // فحص الحدود
+    if(drawdown > InpMaxDrawdownPercent) {
+        Print("⚠️ تحذير: تجاوز حد السحب الأقصى: ", DoubleToString(drawdown, 2), "%");
+        return false;
+    }
+    
+    if(daily_loss > InpMaxDailyLossPercent) {
+        Print("⚠️ تحذير: تجاوز حد الخسارة اليومية: ", DoubleToString(daily_loss, 2), "%");
+        return false;
+    }
+    
+    // تحديث اليوم الجديد
+    datetime new_day = TimeCurrent() - (TimeCurrent() % 86400);
+    if(new_day != current_day) {
+        current_day = new_day;
+        daily_starting_balance = current_balance;
+        daily_trades_count = 0;
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| فحص وقت التداول                                                 |
+//+------------------------------------------------------------------+
+bool IsTimeToTrade() {
+    MqlDateTime time;
+    TimeToStruct(TimeCurrent(), time);
+    
+    // فحص ساعات التداول
+    if(time.hour < InpStartHour || time.hour >= InpEndHour) {
+        return false;
+    }
+    
+    // فحص يوم الجمعة
+    if(InpCloseOnFriday && time.day_of_week == 5 && time.hour >= InpFridayCloseHour) {
+        return false;
+    }
+    
+    // فحص عطلة نهاية الأسبوع للكريبتو
+    if(InpCryptoReduceWeekend && (time.day_of_week == 0 || time.day_of_week == 6)) {
+        // التداول بحذر في عطلة نهاية الأسبوع للكريبتو
+        return (time.hour >= 10 && time.hour <= 20);
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| إدارة الصفقات المفتوحة                                          |
+//+------------------------------------------------------------------+
+void ManageOpenPositions() {
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        if(position_info.SelectByIndex(i)) {
+            if(position_info.Magic() != InpMagicNumber) continue;
+            
+            // البحث عن معلومات الأصل
+            int asset_index = GetAssetIndex(position_info.Symbol());
+            if(asset_index < 0) continue;
+            
+            // إدارة نقطة التعادل
+            if(InpUseBreakeven) {
+                UpdateBreakeven(asset_index);
+            }
+            
+            // إدارة وقف الخسارة المتحرك
+            if(InpUseTrailingStop) {
+                UpdateTrailingStop(asset_index);
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| تحديث نقطة التعادل                                              |
+//+------------------------------------------------------------------+
+void UpdateBreakeven(int asset_index) {
+    double current_price = position_info.PriceCurrent();
+    double open_price = position_info.PriceOpen();
+    double current_sl = position_info.StopLoss();
+    
+    double breakeven_distance = InpBreakevenPips * assets[asset_index].pip_size;
+    double breakeven_profit = InpBreakevenProfitPips * assets[asset_index].pip_size;
+    
+    if(position_info.PositionType() == POSITION_TYPE_BUY) {
+        if(current_price - open_price >= breakeven_distance) {
+            double new_sl = open_price + breakeven_profit;
+            
+            if(current_sl < new_sl) {
+                trade.PositionModify(position_info.Ticket(), 
+                                    NormalizeDouble(new_sl, assets[asset_index].digits), 
+                                    position_info.TakeProfit());
+            }
+        }
+    }
+    else if(position_info.PositionType() == POSITION_TYPE_SELL) {
+        if(open_price - current_price >= breakeven_distance) {
+            double new_sl = open_price - breakeven_profit;
+            
+            if(current_sl > new_sl || current_sl == 0) {
+                trade.PositionModify(position_info.Ticket(), 
+                                    NormalizeDouble(new_sl, assets[asset_index].digits), 
+                                    position_info.TakeProfit());
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| تحديث وقف الخسارة المتحرك                                       |
+//+------------------------------------------------------------------+
+void UpdateTrailingStop(int asset_index) {
+    double current_price = position_info.PriceCurrent();
+    double current_sl = position_info.StopLoss();
+    double open_price = position_info.PriceOpen();
+    
+    double trailing_distance = InpTrailingStartPips * assets[asset_index].pip_size;
+    double trailing_step = InpTrailingStepPips * assets[asset_index].pip_size;
+    
+    if(position_info.PositionType() == POSITION_TYPE_BUY) {
+        if(current_price - open_price >= trailing_distance) {
+            double new_sl = current_price - trailing_distance;
+            
+            if(new_sl > current_sl + trailing_step) {
+                trade.PositionModify(position_info.Ticket(), 
+                                    NormalizeDouble(new_sl, assets[asset_index].digits), 
+                                    position_info.TakeProfit());
+            }
+        }
+    }
+    else if(position_info.PositionType() == POSITION_TYPE_SELL) {
+        if(open_price - current_price >= trailing_distance) {
+            double new_sl = current_price + trailing_distance;
+            
+            if(new_sl < current_sl - trailing_step || current_sl == 0) {
+                trade.PositionModify(position_info.Ticket(), 
+                                    NormalizeDouble(new_sl, assets[asset_index].digits), 
+                                    position_info.TakeProfit());
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| فحص الإشارات                                                     |
+//+------------------------------------------------------------------+
+void CheckForSignals(int asset_index, ENUM_TIMEFRAMES timeframe) {
+    // فحص عدد الصفقات
+    if(!CanOpenNewPosition(asset_index)) return;
+    
+    // تحديث حالة السوق
+    MarketState *state;
+    if(timeframe == PERIOD_M1) {
+        state = &market_states_m1[asset_index];
+    } else {
+        state = &market_states_m5[asset_index];
+    }
+    
+    UpdateMarketState(asset_index, timeframe, state);
+    
+    // فحص الحد الأدنى من الشموع منذ آخر إشارة
+    if(state.bars_since_signal < InpMinCandlesBetweenTrades) {
+        return;
+    }
+    
+    // فحص فلتر الحجم
+    if(InpUseVolumeFilter && !state.volume_confirmed) {
+        return;
+    }
+    
+    // فحص إشارة الشراء
+    if(state.ma_cross_up && !state.rsi_overbought) {
+        if(OpenPosition(asset_index, ORDER_TYPE_BUY, timeframe)) {
+            state.last_signal_time = TimeCurrent();
+            state.bars_since_signal = 0;
+        }
+    }
+    // فحص إشارة البيع
+    else if(state.ma_cross_down && !state.rsi_oversold) {
+        if(OpenPosition(asset_index, ORDER_TYPE_SELL, timeframe)) {
+            state.last_signal_time = TimeCurrent();
+            state.bars_since_signal = 0;
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| تحديث حالة السوق                                                |
+//+------------------------------------------------------------------+
+void UpdateMarketState(int asset_index, ENUM_TIMEFRAMES timeframe, MarketState *state) {
+    double fast_ma[], slow_ma[], rsi[], volume[];
+    
+    // تحديد المؤشرات المناسبة
+    int handle_fast, handle_slow, handle_rsi;
+    
+    if(timeframe == PERIOD_M1) {
+        handle_fast = indicators[asset_index].fast_ma_m1;
+        handle_slow = indicators[asset_index].slow_ma_m1;
+        handle_rsi = indicators[asset_index].rsi_m1;
+    } else {
+        handle_fast = indicators[asset_index].fast_ma_m5;
+        handle_slow = indicators[asset_index].slow_ma_m5;
+        handle_rsi = indicators[asset_index].rsi_m5;
+    }
+    
+    // نسخ البيانات
+    if(CopyBuffer(handle_fast, 0, 0, 3, fast_ma) != 3) return;
+    if(CopyBuffer(handle_slow, 0, 0, 3, slow_ma) != 3) return;
+    if(CopyBuffer(handle_rsi, 0, 0, 3, rsi) != 3) return;
+    if(CopyTickVolume(assets[asset_index].symbol, timeframe, 0, 20, volume) < 20) return;
+    
+    // تحديث القيم
+    state.fast_ma_previous = fast_ma[1];
+    state.fast_ma_current = fast_ma[2];
+    state.slow_ma_previous = slow_ma[1];
+    state.slow_ma_current = slow_ma[2];
+    state.rsi_previous = rsi[1];
+    state.rsi_current = rsi[2];
+    
+    // حساب متوسط الحجم
+    double volume_sum = 0;
+    for(int i = 1; i < 20; i++) {
+        volume_sum += volume[i];
+    }
+    state.volume_average = volume_sum / 19;
+    state.volume_current = volume[0];
+    
+    // كشف التقاطعات
+    state.ma_cross_up = (state.fast_ma_previous <= state.slow_ma_previous && 
+                        state.fast_ma_current > state.slow_ma_current);
+    state.ma_cross_down = (state.fast_ma_previous >= state.slow_ma_previous && 
+                          state.fast_ma_current < state.slow_ma_current);
+    
+    // كشف مستويات RSI
+    state.rsi_overbought = state.rsi_current > InpRSIOverbought;
+    state.rsi_oversold = state.rsi_current < InpRSIOversold;
+    
+    // فحص تأكيد الحجم
+    state.volume_confirmed = (state.volume_current > state.volume_average * InpMinVolumeRatio);
+    
+    // تحديث عداد الشموع
+    state.bars_since_signal++;
+}
+
+//+------------------------------------------------------------------+
+//| فحص إمكانية فتح صفقة جديدة                                      |
+//+------------------------------------------------------------------+
+bool CanOpenNewPosition(int asset_index) {
+    // فحص الحد الأقصى للصفقات اليومية
+    if(daily_trades_count >= InpMaxDailyTrades) {
+        return false;
+    }
+    
+    // عد الصفقات الإجمالية
+    int total_positions = 0;
+    int symbol_positions = 0;
+    
+    for(int i = 0; i < PositionsTotal(); i++) {
+        if(position_info.SelectByIndex(i)) {
+            if(position_info.Magic() == InpMagicNumber) {
+                total_positions++;
+                
+                if(position_info.Symbol() == assets[asset_index].symbol) {
+                    symbol_positions++;
+                }
+            }
+        }
+    }
+    
+    // فحص الحدود
+    if(total_positions >= InpMaxPositions) {
+        return false;
+    }
+    
+    if(symbol_positions >= InpMaxPositionsPerSymbol) {
+        return false;
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| فتح صفقة                                                         |
+//+------------------------------------------------------------------+
+bool OpenPosition(int asset_index, ENUM_ORDER_TYPE order_type, ENUM_TIMEFRAMES timeframe) {
+    string symbol = assets[asset_index].symbol;
+    
+    // تحديث معلومات الرمز
+    if(!symbol_info.Name(symbol)) return false;
+    symbol_info.RefreshRates();
+    
+    double price, sl = 0, tp = 0;
+    
+    // حساب السعر و SL/TP
+    if(order_type == ORDER_TYPE_BUY) {
+        price = symbol_info.Ask();
+        
+        if(InpUseStopLoss) {
+            double sl_distance = InpStopLossPips * assets[asset_index].pip_size * 
+                               assets[asset_index].sl_multiplier;
+            sl = price - sl_distance;
+        }
+        
+        if(InpUseTakeProfit) {
+            double tp_distance = InpTakeProfitPips * assets[asset_index].pip_size * 
+                               assets[asset_index].tp_multiplier;
+            tp = price + tp_distance;
+        }
+    }
+    else {
+        price = symbol_info.Bid();
+        
+        if(InpUseStopLoss) {
+            double sl_distance = InpStopLossPips * assets[asset_index].pip_size * 
+                               assets[asset_index].sl_multiplier;
+            sl = price + sl_distance;
+        }
+        
+        if(InpUseTakeProfit) {
+            double tp_distance = InpTakeProfitPips * assets[asset_index].pip_size * 
+                               assets[asset_index].tp_multiplier;
+            tp = price - tp_distance;
+        }
+    }
+    
+    // تطبيع الأسعار
+    sl = NormalizeDouble(sl, assets[asset_index].digits);
+    tp = NormalizeDouble(tp, assets[asset_index].digits);
+    
+    // حساب حجم اللوت
+    double lot_size = CalculateLotSize(asset_index);
+    if(lot_size <= 0) return false;
+    
+    // تحضير التعليق
+    string comment = StringFormat("%s | %s | %s | %s", 
+                                 InpComment,
+                                 assets[asset_index].description,
+                                 TimeframeToString(timeframe),
+                                 TimeToString(TimeCurrent(), TIME_MINUTES));
+    
+    // فتح الصفقة
+    if(trade.PositionOpen(symbol, order_type, lot_size, price, sl, tp, comment)) {
+        daily_trades_count++;
+        stats.total_trades++;
+        
+        Print("✅ تم فتح صفقة: ",
+              (order_type == ORDER_TYPE_BUY ? "شراء 📈" : "بيع 📉"),
+              " | ", symbol,
+              " | ", assets[asset_index].description,
+              " | الحجم: ", DoubleToString(lot_size, 2),
+              " | السعر: ", DoubleToString(price, assets[asset_index].digits),
+              " | SL: ", DoubleToString(sl, assets[asset_index].digits),
+              " | TP: ", DoubleToString(tp, assets[asset_index].digits));
+        
+        return true;
+    }
+    else {
+        Print("❌ فشل فتح الصفقة: ", trade.ResultComment(),
+              " | الكود: ", trade.ResultRetcode());
+        return false;
+    }
+}
+
+//+------------------------------------------------------------------+
+//| حساب حجم اللوت                                                   |
+//+------------------------------------------------------------------+
+double CalculateLotSize(int asset_index) {
+    double lot_size;
+    
+    if(InpUseAutoLot && InpUseStopLoss) {
+        // حساب تلقائي بناءً على المخاطرة
+        double risk_amount = account_info.Balance() * (InpAutoLotRisk / 100);
+        double sl_pips = InpStopLossPips * assets[asset_index].sl_multiplier;
+        
+        // حساب قيمة النقطة لـ 1 لوت
+        double tick_value = symbol_info.TickValue();
+        double tick_size = symbol_info.TickSize();
+        double pip_value = (assets[asset_index].pip_size / tick_size) * tick_value;
+        
+        // حساب حجم اللوت
+        lot_size = risk_amount / (sl_pips * pip_value);
+    }
+    else {
+        // حجم ثابت
+        lot_size = InpLotSize;
+    }
+    
+    // تطبيع حسب قيود الرمز
+    lot_size = MathMax(assets[asset_index].min_lot, lot_size);
+    lot_size = MathMin(assets[asset_index].max_lot, lot_size);
+    
+    // تطبيق خطوة اللوت
+    lot_size = MathRound(lot_size / assets[asset_index].lot_step) * assets[asset_index].lot_step;
+    
+    return NormalizeDouble(lot_size, 2);
+}
+
+//+------------------------------------------------------------------+
+//| الحصول على فهرس الأصل                                          |
+//+------------------------------------------------------------------+
+int GetAssetIndex(string symbol) {
+    for(int i = 0; i < ArraySize(assets); i++) {
+        if(assets[i].symbol == symbol) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+//+------------------------------------------------------------------+
+//| فحص الشمعة الجديدة                                              |
+//+------------------------------------------------------------------+
+bool IsNewBar(string symbol, ENUM_TIMEFRAMES timeframe) {
+    static datetime last_time[][2]; // [symbol_index][timeframe_index]
+    static bool first_run = true;
+    
+    if(first_run) {
+        ArrayResize(last_time, ArraySize(assets));
+        first_run = false;
+    }
+    
+    int asset_index = GetAssetIndex(symbol);
+    if(asset_index < 0) return false;
+    
+    int tf_index = (timeframe == PERIOD_M1) ? 0 : 1;
+    
+    datetime current_time = iTime(symbol, timeframe, 0);
+    
+    if(current_time != last_time[asset_index][tf_index]) {
+        last_time[asset_index][tf_index] = current_time;
+        return true;
+    }
+    
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| تحويل الإطار الزمني إلى نص                                     |
+//+------------------------------------------------------------------+
+string TimeframeToString(ENUM_TIMEFRAMES timeframe) {
+    switch(timeframe) {
+        case PERIOD_M1:  return "M1";
+        case PERIOD_M5:  return "M5";
+        case PERIOD_M15: return "M15";
+        case PERIOD_M30: return "M30";
+        case PERIOD_H1:  return "H1";
+        case PERIOD_H4:  return "H4";
+        case PERIOD_D1:  return "D1";
+        case PERIOD_W1:  return "W1";
+        case PERIOD_MN1: return "MN1";
+        default:         return "Unknown";
+    }
+}
+
+//+------------------------------------------------------------------+
+//| إغلاق جميع الصفقات                                              |
+//+------------------------------------------------------------------+
+void CloseAllPositions(string reason = "") {
+    Print("⚠️ إغلاق جميع الصفقات", reason != "" ? ": " + reason : "");
+    
+    for(int i = PositionsTotal() - 1; i >= 0; i--) {
+        if(position_info.SelectByIndex(i)) {
+            if(position_info.Magic() == InpMagicNumber) {
+                trade.PositionClose(position_info.Ticket());
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| معالج Timer                                                      |
+//+------------------------------------------------------------------+
+void OnTimer() {
+    // طباعة إحصائيات دورية
+    static int timer_counter = 0;
+    timer_counter++;
+    
+    if(timer_counter % 5 == 0) { // كل 5 دقائق
+        PrintCurrentStatus();
+    }
+    
+    if(timer_counter % 60 == 0) { // كل ساعة
+        PrintDetailedReport();
+        timer_counter = 0;
+    }
+}
+
+//+------------------------------------------------------------------+
+//| طباعة الحالة الحالية                                            |
+//+------------------------------------------------------------------+
+void PrintCurrentStatus() {
+    Print("\n╔═══════════ الحالة الحالية ═══════════╗");
+    Print("║ الوقت: ", TimeToString(TimeCurrent(), TIME_DATE | TIME_MINUTES));
+    Print("║ الرصيد: ", DoubleToString(account_info.Balance(), 2));
+    Print("║ رأس المال: ", DoubleToString(account_info.Equity(), 2));
+    Print("║ الربح/الخسارة: ", DoubleToString(account_info.Profit(), 2));
+    Print("║ الهامش المستخدم: ", DoubleToString(account_info.Margin(), 2));
+    Print("║ مستوى الهامش: ", DoubleToString(account_info.MarginLevel(), 2), "%");
+    
+    // عد الصفقات
+    int positions_count = 0;
+    for(int i = 0; i < PositionsTotal(); i++) {
+        if(position_info.SelectByIndex(i)) {
+            if(position_info.Magic() == InpMagicNumber) {
+                positions_count++;
+            }
+        }
+    }
+    
+    Print("║ الصفقات المفتوحة: ", positions_count, "/", InpMaxPositions);
+    Print("║ الصفقات اليومية: ", daily_trades_count, "/", InpMaxDailyTrades);
+    Print("╚════════════════════════════════════╝");
+}
+
+//+------------------------------------------------------------------+
+//| طباعة تقرير مفصل                                                |
+//+------------------------------------------------------------------+
+void PrintDetailedReport() {
+    Print("\n╔══════════ تقرير الأداء التفصيلي ══════════╗");
+    Print("║ إجمالي الصفقات: ", stats.total_trades);
+    
+    if(stats.total_trades > 0) {
+        double win_rate = (stats.winning_trades > 0) ? 
+                         (double)stats.winning_trades / stats.total_trades * 100 : 0;
+        
+        Print("║ الصفقات الرابحة: ", stats.winning_trades, " (", 
+              DoubleToString(win_rate, 1), "%)");
+        Print("║ الصفقات الخاسرة: ", stats.losing_trades);
+        Print("║ إجمالي الربح: ", DoubleToString(stats.total_profit, 2));
+        Print("║ إجمالي الخسارة: ", DoubleToString(stats.total_loss, 2));
+        Print("║ صافي الربح: ", DoubleToString(stats.total_profit + stats.total_loss, 2));
+        
+        double profit_factor = (stats.total_loss != 0) ? 
+                              MathAbs(stats.total_profit / stats.total_loss) : 0;
+        Print("║ معامل الربح: ", DoubleToString(profit_factor, 2));
+    }
+    
+    // حساب السحب
+    double current_balance = account_info.Balance();
+    double drawdown = ((peak_balance - current_balance) / peak_balance) * 100;
+    
+    Print("║ السحب الحالي: ", DoubleToString(drawdown, 2), "%");
+    Print("║ أقصى رصيد: ", DoubleToString(peak_balance, 2));
+    Print("╚═══════════════════════════════════════╝");
+}
+
+//+------------------------------------------------------------------+
+//| معالج أحداث التداول                                             |
+//+------------------------------------------------------------------+
+void OnTrade() {
+    // تحديث الإحصائيات عند إغلاق صفقة
+    static int last_deals_total = 0;
+    int current_deals_total = HistoryDealsTotal();
+    
+    if(current_deals_total > last_deals_total) {
+        // صفقة جديدة مغلقة
+        if(HistorySelect(0, TimeCurrent())) {
+            for(int i = last_deals_total; i < current_deals_total; i++) {
+                ulong ticket = HistoryDealGetTicket(i);
+                if(ticket > 0) {
+                    if(HistoryDealGetInteger(ticket, DEAL_MAGIC) == InpMagicNumber &&
+                       HistoryDealGetInteger(ticket, DEAL_ENTRY) == DEAL_ENTRY_OUT) {
+                        
+                        double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT);
+                        
+                        if(profit > 0) {
+                            stats.winning_trades++;
+                            stats.total_profit += profit;
+                            stats.consecutive_wins++;
+                            stats.consecutive_losses = 0;
+                            
+                            if(profit > stats.max_profit) {
+                                stats.max_profit = profit;
+                            }
+                        }
+                        else if(profit < 0) {
+                            stats.losing_trades++;
+                            stats.total_loss += profit;
+                            stats.consecutive_losses++;
+                            stats.consecutive_wins = 0;
+                            
+                            if(profit < stats.max_loss) {
+                                stats.max_loss = profit;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        last_deals_total = current_deals_total;
+    }
+}
+
+//+------------------------------------------------------------------+
+//| طباعة ملخص الأداء النهائي                                       |
+//+------------------------------------------------------------------+
+void PrintPerformanceSummary() {
+    double final_balance = account_info.Balance();
+    double profit_loss = final_balance - initial_balance;
+    double profit_percent = (initial_balance > 0) ? 
+                           (profit_loss / initial_balance) * 100 : 0;
+    
+    Print("\n╔══════════════════════════════════════════════════╗");
+    Print("║              ملخص الأداء النهائي                  ║");
+    Print("╠══════════════════════════════════════════════════╣");
+    Print("║ الرصيد الأولي: ", DoubleToString(initial_balance, 2));
+    Print("║ الرصيد النهائي: ", DoubleToString(final_balance, 2));
+    Print("║ الربح/الخسارة: ", DoubleToString(profit_loss, 2), 
+          " (", DoubleToString(profit_percent, 2), "%)");
+    Print("║ إجمالي الصفقات: ", stats.total_trades);
+    
+    if(stats.total_trades > 0) {
+        double win_rate = (double)stats.winning_trades / stats.total_trades * 100;
+        Print("║ معدل الفوز: ", DoubleToString(win_rate, 1), "%");
+        Print("║ أكبر ربح: ", DoubleToString(stats.max_profit, 2));
+        Print("║ أكبر خسارة: ", DoubleToString(stats.max_loss, 2));
+        
+        double avg_profit = (stats.winning_trades > 0) ? 
+                           stats.total_profit / stats.winning_trades : 0;
+        double avg_loss = (stats.losing_trades > 0) ? 
+                         stats.total_loss / stats.losing_trades : 0;
+        
+        Print("║ متوسط الربح: ", DoubleToString(avg_profit, 2));
+        Print("║ متوسط الخسارة: ", DoubleToString(avg_loss, 2));
+    }
+    
+    double max_drawdown = ((peak_balance - final_balance) / peak_balance) * 100;
+    Print("║ السحب الأقصى: ", DoubleToString(max_drawdown, 2), "%");
+    Print("╚══════════════════════════════════════════════════╝");
+}
+
+//+------------------------------------------------------------------+
+//| الحصول على نص سبب الإيقاف                                      |
+//+------------------------------------------------------------------+
+string GetDeInitReasonText(int reason) {
+    switch(reason) {
+        case REASON_PROGRAM:     return "البرنامج توقف";
+        case REASON_REMOVE:      return "إزالة من الشارت";
+        case REASON_RECOMPILE:   return "إعادة ترجمة";
+        case REASON_CHARTCHANGE: return "تغيير الشارت";
+        case REASON_CHARTCLOSE:  return "إغلاق الشارت";
+        case REASON_PARAMETERS:  return "تغيير المعاملات";
+        case REASON_ACCOUNT:     return "تغيير الحساب";
+        default:                 return "سبب غير معروف";
+    }
+}
+
+//+------------------------------------------------------------------+
