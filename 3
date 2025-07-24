@@ -1,0 +1,779 @@
+//+------------------------------------------------------------------+
+//|                              InstitutionalScalpingSystem.mq5    |
+//|                    نظام السكالبينغ المؤسسي المتكامل            |
+//|              إكسبرت احترافي يستخدم جميع المكتبات المتقدمة      |
+//+------------------------------------------------------------------+
+#property copyright "Professional Institutional Trading System"
+#property version   "2.00"
+#property description "نظام سكالبينغ مؤسسي متكامل مع تحليل متعدد الطبقات"
+#property strict
+
+// تضمين المكتبات المؤسسية
+#include <InstitutionalScalping\VolumeDelta.mqh>
+#include <InstitutionalScalping\KAMAKalman.mqh>
+#include <InstitutionalScalping\InstitutionalADX.mqh>
+#include <InstitutionalScalping\RiskManagement.mqh>
+
+// مكتبات التداول القياسية
+#include <Trade\Trade.mqh>
+#include <Trade\PositionInfo.mqh>
+#include <Trade\AccountInfo.mqh>
+
+//+------------------------------------------------------------------+
+//| معاملات الإكسبرت الرئيسية                                       |
+//+------------------------------------------------------------------+
+input group "=== الإعدادات العامة ==="
+input ulong    InpMagicNumber = 123456;       // الرقم السحري
+input string   InpComment = "InstScalp";      // تعليق الصفقات
+input bool     InpAutoOptimize = true;        // التحسين التلقائي
+
+input group "=== إعدادات Volume Delta ==="
+input int      InpVolThreshold = 1000;        // حد Volume Delta
+input double   InpImbalanceRatio = 3.0;       // نسبة الاختلال
+input int      InpDivergenceBars = 10;        // شموع رصد التباعد
+
+input group "=== إعدادات KAMA/Kalman ==="
+input int      InpKAMAPeriod = 10;            // فترة KAMA
+input double   InpProcessNoise = 0.05;        // ضوضاء العملية Q
+input double   InpMeasurementNoise = 5.0;     // ضوضاء القياس R
+
+input group "=== إعدادات ADX ==="
+input int      InpADXPeriod = 14;             // فترة ADX
+input double   InpTrendLevel = 20.0;          // مستوى الاتجاه
+input double   InpMinCrossGap = 5.0;          // فجوة التقاطع الدنيا
+
+input group "=== إدارة المخاطر المؤسسية ==="
+input double   InpBaseRisk = 1.0;             // المخاطرة الأساسية %
+input double   InpMaxDailyRisk = 3.0;         // الحد اليومي %
+input double   InpMaxWeeklyRisk = 6.0;        // الحد الأسبوعي %
+input double   InpMaxMonthlyRisk = 10.0;      // الحد الشهري %
+input int      InpMaxPositions = 3;           // الحد الأقصى للمراكز
+input double   InpTPMultiplier = 2.0;         // مضاعف الهدف
+
+input group "=== فلاتر التداول ==="
+input bool     InpUseTimeFilter = true;       // استخدام فلتر الوقت
+input int      InpStartHour = 8;              // ساعة البداية
+input int      InpEndHour = 20;               // ساعة النهاية
+input bool     InpTradeOnFriday = false;      // التداول يوم الجمعة
+
+//+------------------------------------------------------------------+
+//| المتغيرات العامة والكائنات                                     |
+//+------------------------------------------------------------------+
+// كائنات التداول
+CTrade         g_trade;
+CPositionInfo  g_position;
+CAccountInfo   g_account;
+
+// كائنات التحليل المؤسسي
+CVolumeDeltaAnalyzer  g_volumeDelta;
+CKAMAKalmanAnalyzer   g_kamaKalman;
+CInstitutionalADX     g_adx;
+CInstitutionalRiskManager g_riskManager;
+
+// بيانات التحليل المدمج
+struct IntegratedSignal
+{
+   int            type;           // 1=Buy, -1=Sell, 0=None
+   double         strength;       // 0-100
+   string         primaryReason;  // السبب الرئيسي
+   string         confirmation;   // التأكيدات
+   double         stopLoss;       // مستوى وقف الخسارة
+   double         takeProfit;     // مستوى جني الربح
+   double         positionSize;   // حجم المركز
+};
+
+// حالة النظام
+enum ENUM_SYSTEM_STATE
+{
+   STATE_ANALYZING,      // تحليل السوق
+   STATE_WAITING,        // انتظار الإشارة
+   STATE_POSITION_OPEN,  // مركز مفتوح
+   STATE_RESTRICTED      // مقيد (وصل لحدود المخاطر)
+};
+
+ENUM_SYSTEM_STATE g_systemState = STATE_ANALYZING;
+IntegratedSignal  g_lastSignal;
+datetime          g_lastSignalTime = 0;
+
+//+------------------------------------------------------------------+
+//| تهيئة الإكسبرت                                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   // إعداد التداول
+   g_trade.SetExpertMagicNumber(InpMagicNumber);
+   g_trade.SetDeviationInPoints(10);
+   g_trade.SetTypeFilling(ORDER_FILLING_IOC);
+   g_trade.SetMarginMode();
+   
+   // تهيئة المحللات
+   if(!InitializeAnalyzers())
+   {
+      Print("فشل في تهيئة المحللات");
+      return INIT_FAILED;
+   }
+   
+   // تهيئة إدارة المخاطر
+   DynamicRiskSettings riskSettings;
+   riskSettings.baseRiskPercent = InpBaseRisk;
+   riskSettings.maxDailyRisk = InpMaxDailyRisk;
+   riskSettings.maxWeeklyRisk = InpMaxWeeklyRisk;
+   riskSettings.maxMonthlyRisk = InpMaxMonthlyRisk;
+   riskSettings.maxPositions = InpMaxPositions;
+   
+   if(!g_riskManager.Initialize(riskSettings))
+   {
+      Print("فشل في تهيئة مدير المخاطر");
+      return INIT_FAILED;
+   }
+   
+   // طباعة معلومات النظام
+   PrintSystemInfo();
+   
+   return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| تهيئة المحللات                                                   |
+//+------------------------------------------------------------------+
+bool InitializeAnalyzers()
+{
+   // تهيئة Volume Delta
+   if(!g_volumeDelta.Initialize(InpVolThreshold, InpImbalanceRatio, InpDivergenceBars))
+      return false;
+   
+   // تهيئة KAMA/Kalman
+   if(!g_kamaKalman.Initialize(InpKAMAPeriod, InpProcessNoise, InpMeasurementNoise))
+      return false;
+   
+   // تهيئة ADX
+   if(!g_adx.Initialize(Symbol(), InpADXPeriod, InpAutoOptimize))
+      return false;
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| طباعة معلومات النظام                                            |
+//+------------------------------------------------------------------+
+void PrintSystemInfo()
+{
+   Print("====================================");
+   Print("نظام السكالبينغ المؤسسي المتكامل");
+   Print("====================================");
+   Print("الرمز: ", Symbol());
+   Print("الإطار الزمني: ", EnumToString(Period()));
+   Print("الرافعة المالية: 1:", AccountInfoInteger(ACCOUNT_LEVERAGE));
+   Print("نوع الحساب: ", AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO ? "تجريبي" : "حقيقي");
+   Print("التحسين التلقائي: ", InpAutoOptimize ? "مفعل" : "معطل");
+   Print("====================================");
+}
+
+//+------------------------------------------------------------------+
+//| إلغاء التهيئة                                                    |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+   // إغلاق جميع المراكز عند الإيقاف
+   CloseAllPositions();
+   
+   // طباعة ملخص الأداء
+   PrintPerformanceSummary();
+   
+   Comment("");
+}
+
+//+------------------------------------------------------------------+
+//| الدالة الرئيسية OnTick                                          |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // التحقق من فلتر الوقت
+   if(!CheckTimeFilter()) return;
+   
+   // تحديث حالة النظام
+   UpdateSystemState();
+   
+   // إدارة المراكز المفتوحة
+   if(g_systemState == STATE_POSITION_OPEN)
+   {
+      ManageOpenPositions();
+   }
+   
+   // تحليل السوق للإشارات الجديدة
+   if(g_systemState == STATE_ANALYZING || g_systemState == STATE_WAITING)
+   {
+      // التحقق من توقيت آخر إشارة
+      if(TimeCurrent() - g_lastSignalTime < PeriodSeconds())
+         return;
+      
+      // تحليل متكامل
+      IntegratedSignal signal = AnalyzeMarket();
+      
+      if(signal.type != 0 && signal.strength >= 70)
+      {
+         if(ExecuteSignal(signal))
+         {
+            g_lastSignal = signal;
+            g_lastSignalTime = TimeCurrent();
+         }
+      }
+   }
+   
+   // تحديث واجهة المستخدم
+   UpdateDisplay();
+}
+
+//+------------------------------------------------------------------+
+//| تحليل السوق المتكامل                                            |
+//+------------------------------------------------------------------+
+IntegratedSignal AnalyzeMarket()
+{
+   IntegratedSignal signal;
+   ZeroMemory(signal);
+   
+   // جلب البيانات
+   double high[], low[], close[];
+   ArraySetAsSeries(high, true);
+   ArraySetAsSeries(low, true);
+   ArraySetAsSeries(close, true);
+   
+   int bars = CopyHigh(Symbol(), Period(), 0, 100, high);
+   CopyLow(Symbol(), Period(), 0, 100, low);
+   CopyClose(Symbol(), Period(), 0, 100, close);
+   
+   if(bars < 50) return signal;
+   
+   // 1. تحليل Volume Delta
+   VolumeData volData = g_volumeDelta.AnalyzeCurrentBar(iTime(Symbol(), Period(), 0));
+   
+   // 2. تحليل KAMA/Kalman
+   double signalStrength;
+   string signalReason;
+   int kamaSignal = g_kamaKalman.AnalyzePrice(close[0], signalStrength, signalReason);
+   
+   // 3. تحليل ADX
+   ADXData adxData = g_adx.Calculate(high, low, close, 0, bars);
+   
+   // التحليل المتكامل
+   signal = IntegrateSignals(volData, kamaSignal, signalStrength, adxData);
+   
+   // حساب مستويات SL/TP
+   if(signal.type != 0)
+   {
+       CalculateStopLevels(signal);
+   }
+   
+   return signal;
+}
+
+//+------------------------------------------------------------------+
+//| دمج الإشارات من جميع المحللات                                  |
+//+------------------------------------------------------------------+
+IntegratedSignal IntegrateSignals(const VolumeData &volData, int kamaSignal, 
+                                  double kamaStrength, const ADXData &adxData)
+{
+   IntegratedSignal result;
+   ZeroMemory(result);
+   
+   // متطلبات الإشارة القوية
+   bool volumeConfirm = false;
+   bool trendConfirm = false;
+   bool momentumConfirm = false;
+   
+   // تحليل Volume Delta
+   if(volData.imbalance == IMBALANCE_BULLISH || volData.imbalance == IMBALANCE_EXTREME_BULL)
+   {
+      volumeConfirm = true;
+      result.confirmation += "اختلال حجم صعودي | ";
+   }
+   else if(volData.imbalance == IMBALANCE_BEARISH || volData.imbalance == IMBALANCE_EXTREME_BEAR)
+   {
+      volumeConfirm = true;
+      result.confirmation += "اختلال حجم هبوطي | ";
+   }
+   
+   // تحليل الاتجاه من ADX
+   if(adxData.strength >= TREND_MODERATE)
+   {
+      trendConfirm = true;
+      result.confirmation += StringFormat("ADX: %.1f | ", adxData.adx);
+   }
+   
+   // تحليل الزخم من KAMA
+   if(kamaSignal != 0 && kamaStrength >= 50)
+   {
+      momentumConfirm = true;
+      result.confirmation += StringFormat("KAMA: %.0f%% | ", kamaStrength);
+   }
+   
+   // شروط الدخول المتكاملة
+   if(volumeConfirm && trendConfirm && momentumConfirm)
+   {
+      // إشارة شراء
+      if(kamaSignal > 0 && adxData.plusDI > adxData.minusDI && 
+         (volData.imbalance == IMBALANCE_BULLISH || volData.imbalance == IMBALANCE_EXTREME_BULL))
+      {
+         result.type = 1;
+         result.strength = (kamaStrength + adxData.crossStrength + 70) / 3;
+         result.primaryReason = "تقارب صعودي قوي";
+         
+         // كشف التباعد كتأكيد إضافي
+         if(volData.divergence)
+         {
+            result.strength += 10;
+            result.confirmation += "تباعد إيجابي | ";
+         }
+      }
+      // إشارة بيع
+      else if(kamaSignal < 0 && adxData.minusDI > adxData.plusDI && 
+              (volData.imbalance == IMBALANCE_BEARISH || volData.imbalance == IMBALANCE_EXTREME_BEAR))
+      {
+         result.type = -1;
+         result.strength = (kamaStrength + adxData.crossStrength + 70) / 3;
+         result.primaryReason = "تقارب هبوطي قوي";
+         
+         // كشف التباعد كتأكيد إضافي
+         if(volData.divergence)
+         {
+            result.strength += 10;
+            result.confirmation += "تباعد سلبي | ";
+         }
+      }
+   }
+   
+   // كشف أوامر Iceberg كعامل إضافي
+   if(volData.icebergDetected)
+   {
+      result.strength += 15;
+      result.confirmation += "كشف أوامر مخفية | ";
+   }
+   
+   // تقييد القوة القصوى
+   result.strength = MathMin(100, result.strength);
+   
+   return result;
+}
+
+//+------------------------------------------------------------------+
+//| حساب مستويات وقف الخسارة وجني الربح                             |
+//+------------------------------------------------------------------+
+void CalculateStopLevels(IntegratedSignal &signal)
+{
+   double atr = iATR(Symbol(), Period(), 14);
+   double currentPrice = signal.type > 0 ? SymbolInfoDouble(Symbol(), SYMBOL_ASK) : 
+                                          SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   
+   // حساب وقف الخسارة الديناميكي
+   double slDistance = atr * 1.5;
+   
+   // تعديل بناءً على قوة الإشارة
+   if(signal.strength >= 90)
+      slDistance *= 0.8;  // وقف أقرب للإشارات القوية جداً
+   else if(signal.strength >= 80)
+      slDistance *= 0.9;
+   
+   // حساب المستويات
+   if(signal.type > 0) // Buy
+   {
+      signal.stopLoss = currentPrice - slDistance;
+      signal.takeProfit = currentPrice + (slDistance * InpTPMultiplier);
+   }
+   else // Sell
+   {
+      signal.stopLoss = currentPrice + slDistance;
+      signal.takeProfit = currentPrice - (slDistance * InpTPMultiplier);
+   }
+   
+   // حساب حجم المركز
+   ENUM_VOLATILITY_STATE volState = DetermineVolatilityState(atr);
+   signal.positionSize = g_riskManager.CalculateOptimalPositionSize(
+      currentPrice, signal.stopLoss, volState, signal.strength
+   );
+}
+
+//+------------------------------------------------------------------+
+//| تحديد حالة التقلب                                                |
+//+------------------------------------------------------------------+
+ENUM_VOLATILITY_STATE DetermineVolatilityState(double atr)
+{
+   double atrPercent = atr / SymbolInfoDouble(Symbol(), SYMBOL_BID) * 100;
+   
+   if(atrPercent < 0.05) return VOL_VERY_LOW;
+   else if(atrPercent < 0.1) return VOL_LOW;
+   else if(atrPercent < 0.3) return VOL_NORMAL;
+   else if(atrPercent < 0.5) return VOL_HIGH;
+   else return VOL_EXTREME;
+}
+
+//+------------------------------------------------------------------+
+//| تنفيذ الإشارة                                                    |
+//+------------------------------------------------------------------+
+bool ExecuteSignal(const IntegratedSignal &signal)
+{
+   // التحقق من قيود المخاطر
+   if(!g_riskManager.CheckRiskLimits())
+   {
+      Print("تم رفض الإشارة - تجاوز حدود المخاطر");
+      return false;
+   }
+   
+   // التحقق من الارتباط
+   if(!g_riskManager.CheckCorrelation(Symbol()))
+   {
+      Print("تم رفض الإشارة - مراكز مترابطة كثيرة");
+      return false;
+   }
+   
+   // إعداد الصفقة
+   ENUM_ORDER_TYPE orderType = signal.type > 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double price = signal.type > 0 ? SymbolInfoDouble(Symbol(), SYMBOL_ASK) : 
+                                   SymbolInfoDouble(Symbol(), SYMBOL_BID);
+   
+   string comment = StringFormat("%s | S:%.0f%% | %s", 
+                               InpComment, signal.strength, signal.primaryReason);
+   
+   // فتح الصفقة
+   if(g_trade.PositionOpen(Symbol(), orderType, signal.positionSize, 
+                          price, signal.stopLoss, signal.takeProfit, comment))
+   {
+      ulong ticket = g_trade.ResultDeal();
+      
+      Print("=== صفقة جديدة ===");
+      Print("النوع: ", signal.type > 0 ? "شراء" : "بيع");
+      Print("السعر: ", price);
+      Print("الحجم: ", signal.positionSize);
+      Print("SL: ", signal.stopLoss, " | TP: ", signal.takeProfit);
+      Print("القوة: ", signal.strength, "%");
+      Print("السبب: ", signal.primaryReason);
+      Print("التأكيدات: ", signal.confirmation);
+      Print("==================");
+      
+      // إرسال إشعار
+      SendNotification(StringFormat("صفقة %s على %s | قوة: %.0f%%",
+                                  signal.type > 0 ? "شراء" : "بيع",
+                                  Symbol(), signal.strength));
+      
+      return true;
+   }
+   else
+   {
+      Print("فشل فتح الصفقة: ", g_trade.ResultRetcodeDescription());
+      return false;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| إدارة المراكز المفتوحة                                          |
+//+------------------------------------------------------------------+
+void ManageOpenPositions()
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(!g_position.SelectByIndex(i)) continue;
+      
+      if(g_position.Magic() != InpMagicNumber || g_position.Symbol() != Symbol())
+         continue;
+      
+      // تحديث Trailing Stop
+      UpdateTrailingStop();
+      
+      // التحقق من وقت الاحتفاظ
+      CheckHoldingTime();
+      
+      // مراقبة الأداء
+      MonitorPositionPerformance();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| تحديث Trailing Stop الديناميكي                                  |
+//+------------------------------------------------------------------+
+void UpdateTrailingStop()
+{
+   double atr = iATR(Symbol(), Period(), 14);
+   double trailDistance = atr * 1.2;
+   
+   double currentPrice = g_position.PositionType() == POSITION_TYPE_BUY ? 
+                        SymbolInfoDouble(Symbol(), SYMBOL_BID) : 
+                        SymbolInfoDouble(Symbol(), SYMBOL_ASK);
+   
+   double currentSL = g_position.StopLoss();
+   double newSL = 0;
+   
+   if(g_position.PositionType() == POSITION_TYPE_BUY)
+   {
+      newSL = currentPrice - trailDistance;
+      
+      if(newSL > currentSL && newSL < currentPrice)
+      {
+         if(g_trade.PositionModify(g_position.Ticket(), newSL, g_position.TakeProfit()))
+         {
+            Print("تحديث Trailing Stop للشراء: ", newSL);
+         }
+      }
+   }
+   else
+   {
+      newSL = currentPrice + trailDistance;
+      
+      if(newSL < currentSL && newSL > currentPrice)
+      {
+         if(g_trade.PositionModify(g_position.Ticket(), newSL, g_position.TakeProfit()))
+         {
+            Print("تحديث Trailing Stop للبيع: ", newSL);
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| التحقق من وقت الاحتفاظ                                          |
+//+------------------------------------------------------------------+
+void CheckHoldingTime()
+{
+   datetime openTime = g_position.Time();
+   int barsOpen = iBarShift(Symbol(), Period(), openTime);
+   
+   // إغلاق بعد 10 شموع كحد أقصى للسكالبينغ
+   if(barsOpen >= 10)
+   {
+      if(g_trade.PositionClose(g_position.Ticket()))
+      {
+         Print("إغلاق الصفقة - تجاوز وقت الاحتفاظ الأقصى");
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| مراقبة أداء المركز                                              |
+//+------------------------------------------------------------------+
+void MonitorPositionPerformance()
+{
+   double profit = g_position.Profit();
+   double openPrice = g_position.PriceOpen();
+   double currentPrice = g_position.PriceCurrent();
+   
+   // حساب النسبة المئوية للربح/الخسارة
+   double priceChange = g_position.PositionType() == POSITION_TYPE_BUY ? 
+                       (currentPrice - openPrice) / openPrice * 100 :
+                       (openPrice - currentPrice) / openPrice * 100;
+   
+   // إغلاق جزئي عند تحقيق 50% من الهدف
+   if(priceChange > 0)
+   {
+      double targetDistance = MathAbs(g_position.TakeProfit() - openPrice);
+      double currentDistance = MathAbs(currentPrice - openPrice);
+      
+      if(currentDistance >= targetDistance * 0.5 && g_position.Volume() > SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_MIN))
+      {
+         // إغلاق 50% من المركز
+         double closeVolume = NormalizeDouble(g_position.Volume() * 0.5, 2);
+         
+         if(g_trade.PositionClosePartial(g_position.Ticket(), closeVolume))
+         {
+            Print("إغلاق جزئي - تحقق 50% من الهدف");
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| تحديث حالة النظام                                               |
+//+------------------------------------------------------------------+
+void UpdateSystemState()
+{
+   // التحقق من قيود المخاطر
+   if(!g_riskManager.CheckRiskLimits())
+   {
+      g_systemState = STATE_RESTRICTED;
+      return;
+   }
+   
+   // التحقق من المراكز المفتوحة
+   bool hasOpenPosition = false;
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      if(g_position.SelectByIndex(i) && 
+         g_position.Magic() == InpMagicNumber && 
+         g_position.Symbol() == Symbol())
+      {
+         hasOpenPosition = true;
+         break;
+      }
+   }
+   
+   if(hasOpenPosition)
+      g_systemState = STATE_POSITION_OPEN;
+   else if(g_systemState == STATE_RESTRICTED && g_riskManager.CheckRiskLimits())
+      g_systemState = STATE_ANALYZING;
+   else if(g_systemState != STATE_RESTRICTED)
+      g_systemState = STATE_ANALYZING;
+}
+
+//+------------------------------------------------------------------+
+//| التحقق من فلتر الوقت                                            |
+//+------------------------------------------------------------------+
+bool CheckTimeFilter()
+{
+   if(!InpUseTimeFilter) return true;
+   
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   
+   // التحقق من الساعة
+   if(dt.hour < InpStartHour || dt.hour >= InpEndHour)
+      return false;
+   
+   // التحقق من يوم الجمعة
+   if(!InpTradeOnFriday && dt.day_of_week == 5)
+   {
+      if(dt.hour >= 12) // بعد الظهر يوم الجمعة
+      {
+         CloseAllPositions();
+         return false;
+      }
+   }
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| إغلاق جميع المراكز                                              |
+//+------------------------------------------------------------------+
+void CloseAllPositions()
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(g_position.SelectByIndex(i) && 
+         g_position.Magic() == InpMagicNumber && 
+         g_position.Symbol() == Symbol())
+      {
+         g_trade.PositionClose(g_position.Ticket());
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| تحديث واجهة المستخدم                                            |
+//+------------------------------------------------------------------+
+void UpdateDisplay()
+{
+   RiskMetrics metrics = g_riskManager.GetMetrics();
+   
+   string info = StringFormat(
+      "=== نظام السكالبينغ المؤسسي المتكامل ===\n" +
+      "الحالة: %s\n" +
+      "المراكز المفتوحة: %d/%d\n" +
+      "\n--- معايير الأداء ---\n" +
+      "نسبة Sharpe: %.2f\n" +
+      "نسبة Sortino: %.2f\n" +
+      "السحب الأقصى: %.2f%%\n" +
+      "معدل الفوز: %.1f%%\n" +
+      "عامل الربح: %.2f\n" +
+      "\n--- آخر إشارة ---\n" +
+      "النوع: %s\n" +
+      "القوة: %.0f%%\n" +
+      "السبب: %s\n" +
+      "\n%s",
+      GetSystemStateString(),
+      CountOpenPositions(), InpMaxPositions,
+      metrics.sharpeRatio,
+      metrics.sortinoRatio,
+      metrics.maxDrawdown,
+      metrics.winRate,
+      metrics.profitFactor,
+      g_lastSignal.type == 1 ? "شراء" : g_lastSignal.type == -1 ? "بيع" : "لا يوجد",
+      g_lastSignal.strength,
+      g_lastSignal.primaryReason,
+      g_riskManager.GetRiskRecommendation()
+   );
+   
+   Comment(info);
+}
+
+//+------------------------------------------------------------------+
+//| الحصول على نص حالة النظام                                      |
+//+------------------------------------------------------------------+
+string GetSystemStateString()
+{
+   switch(g_systemState)
+   {
+      case STATE_ANALYZING:     return "تحليل السوق";
+      case STATE_WAITING:       return "انتظار الإشارة";
+      case STATE_POSITION_OPEN: return "مركز مفتوح";
+      case STATE_RESTRICTED:    return "مقيد (حدود المخاطر)";
+      default:                  return "غير محدد";
+   }
+}
+
+//+------------------------------------------------------------------+
+//| عد المراكز المفتوحة                                             |
+//+------------------------------------------------------------------+
+int CountOpenPositions()
+{
+   int count = 0;
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      if(g_position.SelectByIndex(i) && 
+         g_position.Magic() == InpMagicNumber && 
+         g_position.Symbol() == Symbol())
+      {
+         count++;
+      }
+   }
+   return count;
+}
+
+//+------------------------------------------------------------------+
+//| معالج أحداث التداول                                             |
+//+------------------------------------------------------------------+
+void OnTrade()
+{
+   // تحديث تاريخ الأداء
+   static ulong lastDealTicket = 0;
+   
+   if(HistorySelect(0, TimeCurrent()))
+   {
+      for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+      {
+         ulong ticket = HistoryDealGetTicket(i);
+         
+         if(ticket <= lastDealTicket) continue;
+         
+         if(HistoryDealGetInteger(ticket, DEAL_MAGIC) == InpMagicNumber &&
+            HistoryDealGetString(ticket, DEAL_SYMBOL) == Symbol() &&
+            HistoryDealGetInteger(ticket, DEAL_ENTRY) == DEAL_ENTRY_OUT)
+         {
+            double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT);
+            g_riskManager.UpdatePerformanceHistory(profit);
+            
+            lastDealTicket = ticket;
+            
+            // طباعة نتيجة الصفقة
+            Print("نتيجة الصفقة: ", profit > 0 ? "ربح" : "خسارة", 
+                  " | المبلغ: ", DoubleToString(profit, 2));
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| طباعة ملخص الأداء                                               |
+//+------------------------------------------------------------------+
+void PrintPerformanceSummary()
+{
+   RiskMetrics metrics = g_riskManager.GetMetrics();
+   
+   Print("\n====================================");
+   Print("ملخص أداء النظام");
+   Print("====================================");
+   Print("نسبة Sharpe: ", DoubleToString(metrics.sharpeRatio, 2));
+   Print("نسبة Sortino: ", DoubleToString(metrics.sortinoRatio, 2));
+   Print("السحب الأقصى: ", DoubleToString(metrics.maxDrawdown, 2), "%");
+   Print("معدل الفوز: ", DoubleToString(metrics.winRate, 1), "%");
+   Print("عامل الربح: ", DoubleToString(metrics.profitFactor, 2));
+   Print("أقصى خسائر متتالية: ", metrics.consecutiveLosses);
+   Print("أقصى أرباح متتالية: ", metrics.consecutiveWins);
+   Print("====================================\n");
+}
